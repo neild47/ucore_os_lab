@@ -2,6 +2,7 @@
 #include <list.h>
 #include <string.h>
 #include <default_pmm.h>
+#include <stdio.h>
 
 /* In the first fit algorithm, the allocator keeps a list of free blocks (known as the free list) and,
    on receiving a request for memory, scans along the list for the first block that is large enough to
@@ -69,15 +70,22 @@ static void
 default_init_memmap(struct Page *base, size_t n) {
     assert(n > 0);
     struct Page *p = base;
+    list_init(&(base->page_link));
     for (; p != base + n; p ++) {
         assert(PageReserved(p));
         p->flags = p->property = 0;
+        SetPageProperty(p);
         set_page_ref(p, 0);
+
+        //list to base link 
+        if (p != base)
+            list_add_before(&(base->page_link), &(p->page_link));
     }
     base->property = n;
     SetPageProperty(base);
     nr_free += n;
     list_add(&free_list, &(base->page_link));
+    base->page_link.next = &free_list;
 }
 
 static struct Page *
@@ -97,11 +105,27 @@ default_alloc_pages(size_t n) {
     }
     if (page != NULL) {
         list_del(&(page->page_link));
+
         if (page->property > n) {
             struct Page *p = page + n;
+            struct Page *tail = page + n - 1;
+            tail->page_link.next = &(page->page_link);
+            if(tail == page) {
+                page->page_link.next = &(page->page_link);
+                page->page_link.prev = &(page->page_link);
+            } else {
+                page->page_link.next = &((page + 1)->page_link);
+                list_entry_t *tmp = &(page->page_link);
+                while(tmp->next != &(page->page_link))
+                    tmp = tmp->next;
+                page->page_link.prev = &tmp;
+            }
             p->property = page->property - n;
+            SetPageProperty(p);
             list_add(&free_list, &(p->page_link));
-    }
+            p->page_link.next = &free_list;
+        }
+        
         nr_free -= n;
         ClearPageProperty(page);
     }
@@ -116,6 +140,7 @@ default_free_pages(struct Page *base, size_t n) {
         assert(!PageReserved(p) && !PageProperty(p));
         p->flags = 0;
         set_page_ref(p, 0);
+        SetPageProperty(p);
     }
     base->property = n;
     SetPageProperty(base);
@@ -127,13 +152,15 @@ default_free_pages(struct Page *base, size_t n) {
             base->property += p->property;
             ClearPageProperty(p);
             list_del(&(p->page_link));
+            list_add_before(&(base->page_link), &(p->page_link));
         }
         else if (p + p->property == base) {
             p->property += base->property;
             ClearPageProperty(base);
+            list_add_before(&(p->page_link), &(base->page_link));
             base = p;
             list_del(&(p->page_link));
-        }
+        } 
     }
     nr_free += n;
     list_add(&free_list, &(base->page_link));
